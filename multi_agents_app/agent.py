@@ -56,54 +56,110 @@ class PMAgentCenter(BaseAgent):
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         """
-        核心编排逻辑
+        核心编排逻辑，支持人机交互 (HITL)
         """
         logger.info(f"[{self.name}] 启动虚拟产研工作流...")
+
+        # 检查用户是否发送了“继续”指令，用于自动更新审批状态
+        last_user_msg = ""
+        for event in reversed(ctx.session.events):
+            if event.author == "user" and event.content and event.content.parts:
+                part = event.content.parts[0]
+                if hasattr(part, "text") and part.text:
+                    last_user_msg = part.text.strip()
+                    break
+        
+        if "继续" in last_user_msg:
+            current_workflow_step = ctx.session.state.get("workflow_step")
+            if current_workflow_step == "discovery_check":
+                ctx.session.state["discovery_approved"] = True
+                logger.info(f"[{self.name}] 收到人工指令：确认需求阶段，准备进入下一阶段。")
+            elif current_workflow_step == "logic_check":
+                ctx.session.state["logic_approved"] = True
+                logger.info(f"[{self.name}] 收到人工指令：确认架构阶段，准备输出文档。")
+
+        # 获取当前进度
+        current_step = ctx.session.state.get("workflow_step", "discovery")
 
         # ==========================================
         # 阶段 1：需求对齐 (Discovery Phase)
         # ==========================================
-        logger.info(f"[{self.name}] === 进入阶段 1：需求对齐 (Discovery) ===")
-        async for event in self.discovery_agent.run_async(ctx):
-            yield event
+        if current_step == "discovery":
+            logger.info(f"[{self.name}] === 进入阶段 1：需求对齐 (Discovery) ===")
+            async for event in self.discovery_agent.run_async(ctx):
+                yield event
             
-        # 检查是否已有产品定义 (这里假设 Discovery Agent 会更新 Session State)
-        # 实际开发中可以通过检查 key 是否存在来决定是否中断，这里先继续
+            # 标记该阶段完成，进入人工确认
+            ctx.session.state["workflow_step"] = "discovery_check"
+            current_step = "discovery_check"
+
+        # --- 人工确认点：需求确认 ---
+        if current_step == "discovery_check":
+            approval = ctx.session.state.get("discovery_approved", False)
+            if not approval:
+                logger.info(f"[{self.name}] 等待人工确认需求挖掘结果...")
+                yield Event(
+                    author=self.name, 
+                    content="[HITL] 阶段 1 (需求挖掘) 已完成。请检查以上产出并确认。输入 '继续' 或在系统中设置 'discovery_approved=True' 以继续。"
+                )
+                return # 中断执行，等待下次运行
+            
+            ctx.session.state["workflow_step"] = "logic_feasibility"
+            current_step = "logic_feasibility"
 
         # ==========================================
         # 阶段 2：逻辑与可行性建模 (Logic & Feasibility Phase)
         # ==========================================
-        logger.info(f"[{self.name}] === 进入阶段 2：逻辑与可行性建模 (Logic Team) ===")
-        
-        # 2.1 市场/竞品调研 (Researcher) - 为架构设计提供事实依据
-        logger.info(f"[{self.name}] Step 2.1: Researcher 进行访谈与调研...")
-        async for event in self.researcher_agent.run_async(ctx):
-            yield event
+        if current_step == "logic_feasibility":
+            logger.info(f"[{self.name}] === 进入阶段 2：逻辑与可行性建模 (Logic Team) ===")
+            
+            # 2.1 市场/竞品调研 (Researcher)
+            logger.info(f"[{self.name}] Step 2.1: Researcher 进行访谈与调研...")
+            async for event in self.researcher_agent.run_async(ctx):
+                yield event
 
-        # 2.2 初步架构设计 (Architect - Draft)
-        logger.info(f"[{self.name}] Step 2.2: Architect 输出初步逻辑蓝图...")
-        async for event in self.architect_agent.run_async(ctx):
-            yield event
+            # 2.2 初步架构设计 (Architect - Draft)
+            logger.info(f"[{self.name}] Step 2.2: Architect 输出初步逻辑蓝图...")
+            async for event in self.architect_agent.run_async(ctx):
+                yield event
 
-        # 2.3 逻辑审计 (Reviewer) - 寻找漏洞
-        logger.info(f"[{self.name}] Step 2.3: Reviewer 进行逻辑审计与压力测试...")
-        async for event in self.reviewer_agent.run_async(ctx):
-            yield event
+            # 2.3 逻辑审计 (Reviewer)
+            logger.info(f"[{self.name}] Step 2.3: Reviewer 进行逻辑审计与压力测试...")
+            async for event in self.reviewer_agent.run_async(ctx):
+                yield event
 
-        # 2.4 架构修正 (Architect - Finalize) - 根据审计意见完善设计
-        # 只有在 Reviewer 提出重大修改建议时才需要（这里简化为总是执行一次修正闭环）
-        logger.info(f"[{self.name}] Step 2.4: Architect 根据审计意见进行最终修正...")
-        async for event in self.architect_agent.run_async(ctx):
-            yield event
+            # 2.4 架构修正 (Architect - Finalize)
+            logger.info(f"[{self.name}] Step 2.4: Architect 根据审计意见进行最终修正...")
+            async for event in self.architect_agent.run_async(ctx):
+                yield event
+            
+            ctx.session.state["workflow_step"] = "logic_check"
+            current_step = "logic_check"
+
+        # --- 人工确认点：架构确认 ---
+        if current_step == "logic_check":
+            approval = ctx.session.state.get("logic_approved", False)
+            if not approval:
+                logger.info(f"[{self.name}] 等待人工确认架构设计结果...")
+                yield Event(
+                    author=self.name, 
+                    content="[HITL] 阶段 2 (逻辑与架构) 已完成。请检查架构图与审计建议。确认无误后请回复 '继续'。"
+                )
+                return
+            
+            ctx.session.state["workflow_step"] = "documentation"
+            current_step = "documentation"
 
         # ==========================================
         # 阶段 3：文档标准化 (Documentation Phase)
         # ==========================================
-        logger.info(f"[{self.name}] === 进入阶段 3：文档标准化 (Documentation) ===")
-        async for event in self.writer_agent.run_async(ctx):
-            yield event
-
-        logger.info(f"[{self.name}] 工作流结束。")
+        if current_step == "documentation":
+            logger.info(f"[{self.name}] === 进入阶段 3：文档标准化 (Documentation) ===")
+            async for event in self.writer_agent.run_async(ctx):
+                yield event
+            
+            ctx.session.state["workflow_step"] = "completed"
+            logger.info(f"[{self.name}] 工作流全部结束。")
 
 # 实例化应用智能体
 root_agent = PMAgentCenter()
