@@ -3,6 +3,7 @@ from utils import MODEL, AgentInfo
 from utils.load_prompt import load_prompt
 from tools import exif_loop
 
+
 def create_senior_pm_for(agent_config: dict):
     """
     最佳实践：为特定的执行者生成对应的 Senior PM 评审员
@@ -23,5 +24,6 @@ def create_senior_pm_for(agent_config: dict):
         model=MODEL,
         name=f"Senior_PM_Auditor_for_{agent_config['name']}",
         instruction=final_instruction,
-        # tools=[exif_loop] # 必须挂载退出工具
+        # tools=[exif_loop] # 必须挂载退出工具,
+        output_key=AgentInfo.SENIOR_PM_AGENT['output_key']
     )

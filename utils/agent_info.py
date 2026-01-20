@@ -54,3 +54,11 @@ class AgentInfo:
         "instruction_path": "agents/senior_pm_agent/senior_pm.md",
         "output_key": "senior_pm_output"
     }
+
+    # 7. 文档审计员与执行者 (Document Auditor Agent)
+    DOCUMENT_AUDITOR_AGENT = {
+        "name": "Document_Auditor",
+        "description": "文档质量守门员。负责审查 Writer 产出的文档格式，并在合格后通过工具执行磁盘写入、更新或删除操作。它是文档落地的最后一道防线。",
+        "instruction_path": "agents/document_auditor/auditor.md",
+        "output_key": "auditor_output"
+    }
