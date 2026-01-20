@@ -1,4 +1,7 @@
 from . import SafeLiteLlm
-
+from dotenv import load_dotenv
+import os
+load_dotenv()
+MODEL_NAME = os.getenv("MODEL_NAME")
 # MODEL = "gemini-2.5-flash"
-MODEL = SafeLiteLlm(model="openai/gemma-3-27b-it-qat-q4_0-gguf")
+MODEL = SafeLiteLlm(model=MODEL_NAME)

@@ -4,11 +4,12 @@ from google.adk.agents import BaseAgent
 from google.adk.events import Event
 from google.adk.agents import InvocationContext
 
-from discovery_agent.agent import discovery_agent
-from architect_agent.agent import architect_agent
-from researcher_agent.agent import researcher_agent
-from reviewer_agent.agent import reviewer_agent
-from writer_agent.agent import writer_agent
+from agents import discovery_agent
+from agents import architect_agent
+from agents import researcher_agent
+from agents import reviewer_agent
+from agents import writer_agent
+from agents import discovery_loop_agent
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -35,7 +36,8 @@ class PMAgentCenter(BaseAgent):
     def __init__(self, name="PM_Agent_Center"):
         # 定义所有参与的子智能体
         sub_agents = [
-            discovery_agent,
+            # discovery_agent,
+            discovery_loop_agent,
             researcher_agent,
             architect_agent,
             reviewer_agent,
@@ -47,7 +49,8 @@ class PMAgentCenter(BaseAgent):
             description="虚拟产研中心：从模糊想法到全套 PRD 的产出",
             sub_agents=sub_agents,
             # 将智能体实例传入 super().__init__ 以通过 Pydantic 校验
-            discovery_agent=discovery_agent,
+            # discovery_agent=discovery_agent,
+            discovery_agent=discovery_loop_agent,
             researcher_agent=researcher_agent,
             architect_agent=architect_agent,
             reviewer_agent=reviewer_agent,

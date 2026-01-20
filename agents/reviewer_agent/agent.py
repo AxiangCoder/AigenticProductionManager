@@ -8,4 +8,5 @@ reviewer_agent = Agent(
     name=AgentInfo.REVIEWER_AGENT['name'],
     description=AgentInfo.REVIEWER_AGENT['description'],
     instruction=load_prompt(AgentInfo.REVIEWER_AGENT['instruction_path']),
+    output_key=AgentInfo.REVIEWER_AGENT['output_key']
 )

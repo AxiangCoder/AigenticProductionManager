@@ -8,4 +8,5 @@ architect_agent = Agent(
     name=AgentInfo.ARCHITECT_AGENT['name'],
     description=AgentInfo.ARCHITECT_AGENT['description'],
     instruction=load_prompt(AgentInfo.ARCHITECT_AGENT['instruction_path']),
+    output_key=AgentInfo.ARCHITECT_AGENT['output_key'],
 )

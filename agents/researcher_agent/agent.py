@@ -8,4 +8,5 @@ researcher_agent = Agent(
     name=AgentInfo.RESEARCHER_AGENT['name'],
     description=AgentInfo.RESEARCHER_AGENT['description'],
     instruction=load_prompt(AgentInfo.RESEARCHER_AGENT['instruction_path']),
+    output_key=AgentInfo.RESEARCHER_AGENT['output_key'],
 )

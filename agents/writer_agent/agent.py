@@ -8,4 +8,5 @@ writer_agent = Agent(
     name=AgentInfo.WRITER_AGENT['name'],
     description=AgentInfo.WRITER_AGENT['description'],
     instruction=load_prompt(AgentInfo.WRITER_AGENT['instruction_path']),
+    output_key=AgentInfo.WRITER_AGENT['output_key'],
 )

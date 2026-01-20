@@ -1,2 +1,26 @@
 .venv
 .venv/**/*/
+
+# ADK session databases
+**/.adk/session.db
+**/.adk/
+*.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
