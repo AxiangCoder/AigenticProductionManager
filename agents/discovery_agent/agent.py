@@ -4,7 +4,7 @@ from google.adk.agents import Agent, BaseAgent
 from agents.senior_pm_agent import create_senior_pm_for
 from agents.document_auditor import create_document_auditor
 from google.adk.agents import InvocationContext
-from google.adk.events import Event
+from google.adk.events import Event, EventActions
 from utils.load_prompt import load_prompt
 from utils import MODEL, AgentInfo, logger
 
@@ -14,7 +14,7 @@ class DiscoveryPhaseAgent(BaseAgent):
     自定义 Discovery 阶段智能体：
     1. 统一契约：PM 输出 JSON，代码解析。
     2. 后端过滤：屏蔽 JSON，给用户返回 human_message。
-    3. 流程控制：代码通过 ctx.actions.escalate 控制退出，不再使用工具。
+    3. 流程控制：通过 return 控制退出，状态更新使用 EventActions.state_delta。
     """
     discovery_actor: BaseAgent
     senior_pm: BaseAgent
@@ -74,17 +74,27 @@ class DiscoveryPhaseAgent(BaseAgent):
                         full_content += part.text
             
             pm_report = self._parse_json(full_content)
-            ctx.session.state[pm_output_key] = pm_report
 
             # 如果准入不通过，向用户显示温和引导
             if pm_report.get("verdict") == "REJECT":
                 human_msg = pm_report.get("human_message", "我是 CPO 助手，请问有什么可以帮您？")
-                yield Event(author="Senior_PM", content={"parts": [{"text": human_msg}]})
+                yield Event(
+                    author="Senior_PM", 
+                    content={"parts": [{"text": human_msg}]},
+                    actions=EventActions(state_delta={pm_output_key: pm_report})
+                )
                 return # 拦截，等待用户重新输入
             else:
-                ctx.session.state["is_sanity_passed"] = True
                 logger.info(f"[{self.name}] 需求准入通过。")
-                yield Event(author="Senior_PM", content={"parts": [{"text": "需求合法，已转交给需求专家为您服务。\n\n"}]})
+                yield Event(
+                    author="Senior_PM", 
+                    content={"parts": [{"text": "需求合法，已转交给需求专家为您服务。\n\n"}]},
+                    actions=EventActions(state_delta={
+                        "is_sanity_passed": True,
+                        pm_output_key: pm_report
+                    })
+                )
+                return # 必须 return，让 ADK 完成 session 落地
 
 
         # --- [阶段二]：执行阶段 - 需求挖掘对话 ---
@@ -106,15 +116,22 @@ class DiscoveryPhaseAgent(BaseAgent):
                         full_content += part.text
             
             pm_report = self._parse_json(full_content)
-            ctx.session.state[pm_output_key] = pm_report
             
             if pm_report.get("verdict") == "REJECT":
                 system_ins = pm_report.get("system_instructions", "请继续完善。")
-                yield Event(author="Senior_PM_Auditor", content={"parts": [{"text": f"审计未通过：{system_ins}"}]})
+                yield Event(
+                    author="Senior_PM_Auditor", 
+                    content={"parts": [{"text": f"审计未通过：{system_ins}"}]},
+                    actions=EventActions(state_delta={pm_output_key: pm_report})
+                )
             else:
                 score = pm_report.get("score", 0)
                 if score >= 6:
-                    yield Event(author="Senior_PM_Auditor", content={"parts": [{"text": f"CPO 审计通过 (得分: {score})。正在申请文档归档..."}]})
+                    yield Event(
+                        author="Senior_PM_Auditor", 
+                        content={"parts": [{"text": f"CPO 审计通过 (得分: {score})。正在申请文档归档..."}]},
+                        actions=EventActions(state_delta={pm_output_key: pm_report})
+                    )
                     
                     # --- [阶段四]：新增职责 C - 文档自动化归档 ---
                     # 将归档请求添加到 session state，document_auditor 会读取并处理
@@ -123,9 +140,14 @@ class DiscoveryPhaseAgent(BaseAgent):
                     async for event in self.doc_auditor.run_async(ctx):
                         yield event
                     
-                    ctx.actions.escalate = True # 代码控制流程跳转
+                    # 阶段完成，直接 return
+                    return
                 else:
-                    yield Event(author="Senior_PM_Auditor", content={"parts": [{"text": f"得分 {score}，请继续优化。"}]})
+                    yield Event(
+                        author="Senior_PM_Auditor", 
+                        content={"parts": [{"text": f"得分 {score}，请继续优化。"}]},
+                        actions=EventActions(state_delta={pm_output_key: pm_report})
+                    )
 
     def _parse_json(self, text: str) -> dict:
         """
