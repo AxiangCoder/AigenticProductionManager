@@ -94,8 +94,6 @@ class DiscoveryPhaseAgent(BaseAgent):
                         pm_output_key: pm_report
                     })
                 )
-                return # 必须 return，让 ADK 完成 session 落地
-
 
         # --- [阶段二]：执行阶段 - 需求挖掘对话 ---
         discovery_output = ctx.session.state.get(output_key, "")
