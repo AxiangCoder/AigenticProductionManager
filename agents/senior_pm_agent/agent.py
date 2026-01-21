@@ -2,7 +2,44 @@ from google.adk.agents import Agent # 注意：修复了导入路径
 from utils import MODEL, AgentInfo
 from utils.load_prompt import load_prompt
 from tools import exif_loop
+from google.adk.planners import PlanReActPlanner
+from pydantic import BaseModel, Field
+from typing import Literal
 
+class AuditMetadata(BaseModel):
+    """审计元数据"""
+    current_stage: Literal["SanityCheck", "Auditor"] = Field(
+        ..., 
+        description="当前阶段：SanityCheck（需求准入验证）或 Auditor（执行者审计）"
+    )
+    target: str = Field(
+        ..., 
+        description="目标执行者名称，例如：Discovery_Expert、Architect_Expert"
+    )
+class SeniorPMOutput(BaseModel):
+    """Senior PM Agent 的统一输出格式"""
+    verdict: Literal["PASS", "REJECT"] = Field(
+        ..., 
+        description="评审结果：PASS（通过）或 REJECT（拒绝）"
+    )
+    score: float = Field(
+        ..., 
+        ge=0.0, 
+        le=10.0, 
+        description="评分：0.0-10.0 分，6.0 分及以上为通过"
+    )
+    human_message: str = Field(
+        ..., 
+        description="给用户的引导语。阶段一（准入验证）使用：温和的引导语；阶段二（审计通过）使用：'审计通过'"
+    )
+    system_instructions: str = Field(
+        ..., 
+        description="给执行者的处方级指令。阶段二使用：若是 REJECT，必须以 'COMMAND:' 开头，具体到哪一行、哪个逻辑节点需要修改"
+    )
+    audit_metadata: AuditMetadata = Field(
+        ..., 
+        description="审计元数据，包含当前阶段和目标执行者信息"
+    )
 
 def create_senior_pm_for(agent_config: dict):
     """
@@ -24,6 +61,6 @@ def create_senior_pm_for(agent_config: dict):
         model=MODEL,
         name=f"Senior_PM_Auditor_for_{agent_config['name']}",
         instruction=final_instruction,
-        # tools=[exif_loop] # 必须挂载退出工具,
-        output_key=AgentInfo.SENIOR_PM_AGENT['output_key']
+        output_key=AgentInfo.SENIOR_PM_AGENT['output_key'],
+        output_schema=SeniorPMOutput,  # 使用 output_schema 约束输出格式
     )
