@@ -1,8 +1,6 @@
 from google.adk.agents import Agent # 注意：修复了导入路径
 from utils import MODEL, AgentInfo
-from utils.load_prompt import load_prompt
-from tools import exif_loop
-from google.adk.planners import PlanReActPlanner
+from utils import load_prompt, logger
 from pydantic import BaseModel, Field
 from typing import Literal
 
@@ -56,7 +54,7 @@ def create_senior_pm_for(agent_config: dict):
     ).replace(
         '{content_to_audit}', f"{{{agent_config['output_key']}}}"  # 双花括号表示保留占位符供运行时解析
     )
-    
+
     return Agent(
         model=MODEL,
         name=f"Senior_PM_Auditor_for_{agent_config['name']}",

@@ -6,6 +6,8 @@
 **/.adk/
 *.db
 
+outputs/**/*
+
 # Python cache
 __pycache__/
 *.pyc
