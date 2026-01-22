@@ -58,12 +58,6 @@ class DiscoveryPhaseAgent(BaseAgent):
         user_confirmed = ctx.session.state.get("user_confirmed", False)
         audit_feedback = ctx.session.state.get("audit_feedback", "")
 
-        try:
-            state_json = json.dumps(dict(ctx.session.state), indent=2, ensure_ascii=False)
-            logger.debug(f"[Session State]\n{state_json}")
-        except TypeError:
-            logger.debug (f"ctx.session.state: {ctx.session.state}")
-
         # 初始化 state，解决模板渲染 KeyError
         if output_key not in ctx.session.state:
             ctx.session.state[output_key] = "执行者尚未产出阶段性总结。"
@@ -74,37 +68,11 @@ class DiscoveryPhaseAgent(BaseAgent):
         
         # --- [阶段一]：职责 A - 需求准入验证 ---
         if not is_sanity_passed:
-            logger.info(f"[{self.name}] CPO 正在静默审计需求准入...")
-            
-            # 捕获 PM 输出并手动解析
-            full_content = ""
-            async for event in self.senior_pm.run_async(ctx):
-                if event.content and event.content.parts:
-                    part = event.content.parts[0]
-                    if hasattr(part, "text") and part.text:
-                        full_content += part.text
-            
-            pm_report = self._parse_json(full_content)
-
-            # 如果准入不通过，向用户显示温和引导
-            if pm_report.get("verdict") == "REJECT":
-                human_msg = pm_report.get("human_message", "我是 CPO 助手，请问有什么可以帮您？")
-                yield Event(
-                    author="Senior_PM", 
-                    content={"parts": [{"text": human_msg}]},
-                    actions=EventActions(state_delta={pm_output_key: pm_report})
-                )
+            async for event in self._stage_sanity_check (ctx=ctx, output_key=output_key):
+                yield event
+            if not ctx.session.state.get("is_sanity_passed", False):
                 return # 拦截，等待用户重新输入
-            else:
-                logger.info(f"[{self.name}] 需求准入通过。")
-                yield Event(
-                    author="Senior_PM", 
-                    # content={"parts": [{"text": "需求合法，已转交给需求专家为您服务。\n\n"}]},
-                    actions=EventActions(state_delta={
-                        "is_sanity_passed": True,
-                        pm_output_key: pm_report
-                    })
-                )
+
 
 
         # --- [阶段二]：执行阶段 - 需求挖掘与用户确认 ---
@@ -255,5 +223,38 @@ class DiscoveryPhaseAgent(BaseAgent):
         except Exception as e:
             logger.error (f"JSON 解析极致加固失败: {e}")
             return {}
+
+    async def _stage_sanity_check (self, *, ctx: InvocationContext, output_key):
+        
+        logger.info(f"[{self.name}] CPO 正在静默审计需求准入...")
+        # 捕获 PM 输出并手动解析
+        full_content = ""
+        async for event in self.senior_pm.run_async(ctx):
+            if event.content and event.content.parts:
+                part = event.content.parts[0]
+                if hasattr(part, "text") and part.text:
+                    full_content += part.text
+        
+        pm_report = self._parse_json(full_content)
+
+        # 如果准入不通过，向用户显示温和引导
+        if pm_report.get("verdict") == "REJECT":
+            human_msg = pm_report.get("human_message", "我是 CPO 助手，请问有什么可以帮您？")
+            yield Event(
+                author="Senior_PM", 
+                content={"parts": [{"text": human_msg}]},
+                actions=EventActions(state_delta={output_key: pm_report})
+            )
+        else:
+            logger.info(f"[{self.name}] 需求准入通过。")
+            yield Event(
+                author="Senior_PM", 
+                # content={"parts": [{"text": "需求合法，已转交给需求专家为您服务。\n\n"}]},
+                actions=EventActions(state_delta={
+                    "is_sanity_passed": True,
+                })
+            )
+
+
 # 导出实例
 discovery_phase_agent = DiscoveryPhaseAgent()
