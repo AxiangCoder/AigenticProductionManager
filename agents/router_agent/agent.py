@@ -25,27 +25,12 @@ class RouterAgent(BaseAgent):
     3. 包含首次判断逻辑
     """
 
-    router: BaseAgent
-
     model_config = {"arbitrary_types_allowed": True}
 
     def __init__(self):
-        router = Agent(
-            model=MODEL,
-            name="Router_Agent",
-            instruction=load_prompt("agents/router_agent/router.md"),
-            output_key="router_output",
-            output_schema=RouteDecision,  # 使用 output_schema 约束输出格式
-            generate_content_config=types.GenerateContentConfig(
-                temperature=0.3,  # 低温度，确保路由决策稳定
-            ),
-        )
-
         super().__init__(
             name="Router_Agent",
             description="智能路由决策器，负责判断应该路由到哪个子智能体",
-            sub_agents=[router],
-            router=router,
         )
 
     async def decide(
@@ -59,25 +44,39 @@ class RouterAgent(BaseAgent):
         执行路由决策
         返回: RouteDecision 对象
         
-        将上下文信息存储到 state，router 会从 state 中读取
+        动态生成提示词并创建 router agent
         """
-        # 将上下文信息存储到 state
-        ctx.session.state["_router_context"] = {
-            "user_message": user_message,
-            "project_stage": project_stage,
-            "current_agent": current_agent,
-        }
+        # 加载提示词模板
+        prompt_template = load_prompt("agents/router_agent/router.md")
+        
+        # 替换占位符
+        current_agent_str = current_agent if current_agent else "None"
+        instruction = prompt_template.replace("{user_message}", user_message) \
+                                     .replace("{project_stage}", project_stage) \
+                                     .replace("{current_agent}", current_agent_str)
+        
+        # 动态创建 router agent
+        router = Agent(
+            model=MODEL,
+            name="Router_Agent",
+            instruction=instruction,
+            output_key="router_output",
+            output_schema=RouteDecision,  # 使用 output_schema 约束输出格式
+            generate_content_config=types.GenerateContentConfig(
+                temperature=0.3,  # 低温度，确保路由决策稳定
+            ),
+        )
         
         # 调用路由智能体，获取 full_content
         full_content = ""
-        async for event in self.router.run_async(ctx):
+        async for event in router.run_async(ctx):
             if event.content and event.content.parts:
                 part = event.content.parts[0]
                 if hasattr(part, "text") and part.text:
                     full_content += part.text
         
         # 解析 JSON 输出
-        decision_dict = self._parse_json(full_content)
+        decision_dict = parse_json(full_content)
         
         # 如果解析失败，尝试从 state 中读取（output_schema 可能会自动存储）
         if not decision_dict:
@@ -132,9 +131,4 @@ class RouterAgent(BaseAgent):
             },
         )
 
-    def _parse_json(self, text: str) -> dict:
-        """
-        使用公共的 parse_json 工具函数解析 JSON
-        """
-        return parse_json(text)
 

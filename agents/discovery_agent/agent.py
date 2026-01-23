@@ -88,7 +88,7 @@ class DiscoveryPhaseAgent(BaseAgent):
             content={
                 "parts": [
                     {
-                        "text": f"以下是现有的产品定义文档：\n\n{doc_content}\n\n---\n\n**任务指令：{instruction}, 请基于以上文档内容进行增量需求挖掘。**\n\n"
+                        "text": f"以下是现有的产品定义文档：\n\n{doc_content}\n\n---\n\n**任务指令：{instruction}请基于以上文档内容进行增量需求挖掘。**\n\n"
                     }
                 ]
             },
@@ -357,8 +357,35 @@ class DiscoveryPhaseAgent(BaseAgent):
                 ]
             },
         )
+        full_content = ""
         async for event in self.doc_auditor.run_async(ctx):
-            yield event
+            if event.content and event.content.parts:
+                part = event.content.parts[0]
+                if hasattr(part, "text") and part.text:
+                    full_content += part.text
+        doc_report = self._parse_json(full_content)
+        if "[Document_Auditor] 审核未通过" in full_content:
+            audit_feedback_text = (
+                f"[Document_Auditor] 审核未通过。反馈如下：\n\n{doc_report}\n\n"
+            )
+            yield Event(
+                author=self.name,
+                content={"parts": [{"text": f"重新生成文档中...\n\n{audit_feedback_text}\n\n"}]},
+                actions=EventActions(
+                    state_delta={
+                        "is_sanity_passed": True,
+                        "user_confirmed": True,
+                        "feedback_count": ctx.session.state.get("feedback_count", 0) + 1,
+                        "discovery_instruction_mode": False,
+                        "discovery_instruction": "",
+                        "discovery_document_content": "",
+                        "audit_feedback": audit_feedback_text,
+                    }
+                ),
+            )
+            async for event in self._discover_agent_confirm_user_needs(ctx=ctx):
+                yield event
+
         return  # 流程结束
 
 
