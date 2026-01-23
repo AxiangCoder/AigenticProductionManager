@@ -62,3 +62,11 @@ class AgentInfo:
         "instruction_path": "agents/document_auditor/auditor.md",
         "output_key": "auditor_output"
     }
+
+    # 8. 智能产品经理助手 (Agentic PM Agent)
+    AGENTIC_PM_AGENT = {
+        "name": "Agentic_PM",
+        "description": "主智能体，负责路由决策、项目阶段管理、用户交互。作为用户与产品设计智能体系统之间的统一入口。",
+        "instruction_path": "agents/agentic_pm/agentic_pm.md",
+        "output_key": "agentic_pm_output"
+    }
