@@ -1,3 +1,4 @@
 from agents import DiscoveryPhaseAgent
-
-root_agent = DiscoveryPhaseAgent()
+from agents import ResearchPhaseAgent
+# root_agent = DiscoveryPhaseAgent()
+root_agent = ResearchPhaseAgent()
