@@ -14,6 +14,7 @@ class RouteDecision(BaseModel):
     target_agent: str  # "discovery" | "research" | "continue" | "unknown"
     reason: str
     confidence: float  # 0.0-1.0
+    instruction: str = ""  # 传递给子智能体的指令
 
 
 class RouterAgent(BaseAgent):
@@ -109,6 +110,7 @@ class RouterAgent(BaseAgent):
             target_agent=decision_dict.get("target_agent", "unknown"),
             reason=decision_dict.get("reason", ""),
             confidence=decision_dict.get("confidence", 0.0),
+            instruction=decision_dict.get("instruction", ""),
         )
 
     async def _run_async_impl(

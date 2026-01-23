@@ -63,27 +63,21 @@ class AgenticPMAgent(BaseAgent):
             return "discovery"
         
         # 检查是否有 Discovery 相关文档（PRD、Discovery 输出等）
-        has_discovery_doc = any(
-            "prd" in f.lower() or "discovery" in f.lower() 
-            for f in files
-        )
+        discovery_doc_path = self._find_document_path("discovery")
+        research_doc_path = self._find_document_path("research")
+
+        result = {
+            "project_stage": "unknown",
+            "document_path": None,
+        }
         
-        # 检查是否有 Research 相关文档
-        has_research_doc = any(
-            "research" in f.lower() or "调研" in f.lower()
-            for f in files
-        )
-        
-        # 判断逻辑
-        if has_discovery_doc and not has_research_doc:
-            logger.info(f"[{self.name}] 检测到 Discovery 文档但无 Research 文档，判断为 research 阶段")
-            return "research"
-        elif not has_discovery_doc:
-            logger.info(f"[{self.name}] 未检测到 Discovery 文档，判断为 discovery 阶段")
-            return "discovery"
-        else:
-            logger.info(f"[{self.name}] 检测到多个阶段文档，判断为 unknown")
-            return "unknown"
+        if discovery_doc_path:
+            result["project_stage"] = "discovery"
+            result["document_path"] = discovery_doc_path
+        elif research_doc_path:
+            result["project_stage"] = "research"
+            result["document_path"] = research_doc_path
+        return result
 
     def _is_first_load(self, ctx: InvocationContext) -> bool:
         """
@@ -152,6 +146,59 @@ class AgenticPMAgent(BaseAgent):
         }
         return agent_map.get(agent_name, self.discovery_agent)
 
+    def _find_document_path(self, target_agent_name: str) -> Optional[str]:
+        """
+        根据目标智能体名称查找对应的文档路径
+        
+        Args:
+            target_agent_name: 目标智能体名称（"discovery" 或 "research"）
+        
+        Returns:
+            文档路径，如果不存在则返回 None
+        """
+        output_dir = "outputs"
+        
+        if not os.path.exists(output_dir):
+            logger.debug(f"[{self.name}] outputs 目录不存在")
+            return None
+        
+        # 根据智能体名称确定关键词
+        keywords_map = {
+            "discovery": ["discovery", "prd"],
+            "research": ["research", "调研"],
+        }
+        
+        keywords = keywords_map.get(target_agent_name, [])
+        
+        # 查找文档文件
+        document_files = []
+        try:
+            for filename in os.listdir(output_dir):
+                if filename.endswith(".md"):
+                    # 如果提供了关键词，检查文件名是否包含关键词
+                    if keywords:
+                        if not any(keyword.lower() in filename.lower() for keyword in keywords):
+                            continue
+                    
+                    file_path = os.path.join(output_dir, filename)
+                    # 按修改时间排序，最新的在前
+                    mtime = os.path.getmtime(file_path)
+                    document_files.append((mtime, file_path, filename))
+        except Exception as e:
+            logger.error(f"[{self.name}] 读取 {output_dir} 目录失败: {e}")
+            return None
+        
+        if not document_files:
+            logger.debug(f"[{self.name}] 未找到 {target_agent_name} 相关的文档")
+            return None
+        
+        # 按修改时间排序，取最新的
+        document_files.sort(key=lambda x: x[0], reverse=True)
+        latest_file_path = document_files[0][1]
+        
+        logger.info(f"[{self.name}] 找到文档: {document_files[0][2]} (路径: {latest_file_path})")
+        return latest_file_path
+
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
@@ -159,12 +206,12 @@ class AgenticPMAgent(BaseAgent):
         主执行逻辑
         """
         # 1. 检测项目阶段
-        project_stage = self._detect_project_stage()
-        logger.info(f"[{self.name}] 检测到项目阶段: {project_stage}")
+        project_stage_result = self._detect_project_stage()
+        logger.info(f"[{self.name}] 检测到项目阶段: {project_stage_result['project_stage']}")
         
         # 2. 首次加载：友好问候
         if self._is_first_load(ctx):
-            async for event in self._greet_user(ctx, project_stage):
+            async for event in self._greet_user(ctx, project_stage_result['project_stage']):
                 yield event
             return  # 等待用户输入
         
@@ -181,7 +228,7 @@ class AgenticPMAgent(BaseAgent):
         route_decision = await self.router_agent.decide(
             ctx=ctx,
             user_message=last_user_msg,
-            project_stage=project_stage,
+            project_stage=project_stage_result['project_stage'],
             current_agent=current_agent_name,
         )
         
@@ -259,8 +306,22 @@ class AgenticPMAgent(BaseAgent):
         
         # 9. 调用子智能体
         target_agent = self._get_agent(target_agent_name)
-        async for event in target_agent.run_async(ctx):
-            yield event
+        
+        # 从路由决策中获取 instruction
+        instruction = route_decision.instruction if hasattr(route_decision, 'instruction') else ""
+        
+        # 如果子智能体支持 run_with_instruction，使用它；否则使用 run_async
+        if hasattr(target_agent, 'run_with_instruction'):
+            async for event in target_agent.run_with_instruction(
+                ctx=ctx,
+                instruction=instruction,
+                document_path=project_stage_result['document_path']
+            ):
+                yield event
+        else:
+            # 如果不支持 run_with_instruction，使用常规的 run_async
+            async for event in target_agent.run_async(ctx):
+                yield event
 
 
 # 导出实例（ADK 需要 root_agent 变量）

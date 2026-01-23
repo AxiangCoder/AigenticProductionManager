@@ -1,11 +1,11 @@
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from google.adk.agents import Agent, BaseAgent
 from agents.senior_pm_agent import create_senior_pm_for
 from agents.document_auditor import create_document_auditor
 from google.adk.agents import InvocationContext
 from google.adk.events import Event, EventActions
 from utils.load_prompt import load_prompt
-from utils import MODEL, AgentInfo, logger, parse_json
+from utils import MODEL, AgentInfo, logger, parse_json, load_document_by_path
 from google.genai import types
 
 
@@ -15,6 +15,7 @@ class DiscoveryPhaseAgent(BaseAgent):
     1. 统一契约：PM 输出 JSON，代码解析。
     2. 后端过滤：屏蔽 JSON，给用户返回 human_message。
     3. 流程控制：通过 return 控制退出，状态更新使用 EventActions.state_delta。
+    4. 支持增量需求模式：通过 run_with_instruction 方法接收指令和文档路径。
     """
 
     discovery_actor: BaseAgent
@@ -47,28 +48,119 @@ class DiscoveryPhaseAgent(BaseAgent):
             doc_auditor=doc_auditor,
         )
 
+    async def run_with_instruction(
+        self,
+        ctx: InvocationContext,
+        instruction: str,
+        document_path: Optional[str] = None,
+    ) -> AsyncGenerator[Event, None]:
+        """
+        增量需求挖掘模式：接收指令和文档路径，执行增量需求挖掘
+        
+        Args:
+            ctx: 调用上下文
+            instruction: 来自 RouterAgent 的指令
+            document_path: 文档路径（如果存在现有文档）
+        
+        注意：所有状态更新都通过 ctx.session.state 进行，不通过参数传入。
+        这样可以保持最小化修改，让智能体通过 state 自动判断运行模式。
+        """
+        # 1. 加载文档（如果提供了路径）
+        doc_content = None
+        if document_path:
+            doc_content = load_document_by_path(document_path)
+            if doc_content is None:
+                # 文档不存在，告知用户
+                yield Event(
+                    author=self.name,
+                    content={
+                        "parts": [
+                            {
+                                "text": f"⚠️ 警告：文档路径 {document_path} 不存在，文档可能已丢失。将基于现有信息进行需求挖掘。\n\n"
+                            }
+                        ]
+                    },
+                )
+        
+        # 2. 设置指令模式标志和指令内容到 state（完整赋值所有字段）
+        yield Event(
+            author=self.name,
+            content={"parts": []},
+            actions=EventActions(
+                state_delta={
+                    "is_sanity_passed": False,
+                    "user_confirmed": False,
+                    "feedback_count": ctx.session.state.get("feedback_count", 0),
+                    "discovery_instruction_mode": True,
+                    "discovery_instruction": instruction,
+                    "discovery_document_content": doc_content if doc_content else "",
+                    "audit_feedback": "",
+                }
+            ),
+        )
+        
+        # 3. 调用核心逻辑（_run_async_impl 会从 state 中读取所有需要的信息）
+        async for event in self._run_async_impl(ctx):
+            yield event
+
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
         output_key = AgentInfo.DISCOVERY_AGENT["output_key"]
 
-        # 1. 基础状态获取
+        logger.debug (f"ctx.session.state: {ctx.session.state}")
+
+        # 1. 检测是否是指令模式
+        is_instruction_mode = ctx.session.state.get("discovery_instruction_mode", False)
+        
+        # 2. 基础状态获取
         is_sanity_passed = ctx.session.state.get("is_sanity_passed", False)
 
-        # 初始化 state，解决模板渲染 KeyError
-        if output_key not in ctx.session.state:
-            ctx.session.state[output_key] = "执行者尚未产出阶段性总结。"
+        logger.debug(f"is_sanity_passed: {is_sanity_passed}, is_instruction_mode: {is_instruction_mode}")
 
-        logger.debug(f"is_sanity_passed: {is_sanity_passed}")
+        # 3. 指令模式：注入文档和指令，跳过 sanity check
+        if is_instruction_mode:
+            instruction = ctx.session.state.get("discovery_instruction", "")
+            doc_content = ctx.session.state.get("discovery_document_content")
+            
+            # 注入文档内容（如果存在）
+            if doc_content:
+                yield Event(
+                    author="system",
+                    content={
+                        "parts": [
+                            {
+                                "text": f"以下是现有的产品定义文档：\n\n{doc_content}\n\n---\n\n**任务指令：{instruction}, 请基于以上文档内容进行增量需求挖掘。**\n\n"
+                            }
+                        ]
+                    },
+                    # 跳过 sanity check，直接进入挖掘阶段（完整赋值所有字段）
+                    actions=EventActions(
+                        state_delta={
+                            "is_sanity_passed": True,
+                            "user_confirmed": False,
+                            "feedback_count": ctx.session.state.get("feedback_count", 0),
+                            "discovery_instruction_mode": False,
+                            "discovery_instruction": "",
+                            "discovery_document_content": "",
+                            "audit_feedback": ctx.session.state.get("audit_feedback", ""),
+                        }
+                    ),
+                )
+            
+            # 直接进入挖掘阶段
+            async for event in self._stage_discovery_mining(ctx=ctx):
+                yield event
+            return
 
-        # --- [阶段一]：职责 A - 需求准入验证 ---
+        # 4. 常规模式：需求准入验证
         if not is_sanity_passed:
             async for event in self._stage_sanity_check(ctx=ctx, output_key=output_key):
                 yield event
             if not ctx.session.state.get("is_sanity_passed", False):
                 return  # 拦截，等待用户重新输入
 
-        # --- [阶段二]：执行阶段 - 需求挖掘与用户确认 ---
+        # 5. 常规模式：需求挖掘与用户确认
         async for event in self._stage_discovery_mining(ctx=ctx):
             yield event
 
@@ -97,7 +189,7 @@ class DiscoveryPhaseAgent(BaseAgent):
 
         pm_report = self._parse_json(full_content)
 
-        # 如果准入不通过，向用户显示温和引导
+        # 如果准入不通过，向用户显示温和引导（完整赋值所有字段）
         if pm_report.get("verdict") == "REJECT":
             human_msg = pm_report.get(
                 "human_message", "我是 CPO 助手，请问有什么可以帮您？"
@@ -105,7 +197,18 @@ class DiscoveryPhaseAgent(BaseAgent):
             yield Event(
                 author=self.name,
                 content={"parts": [{"text": human_msg}]},
-                actions=EventActions(state_delta={output_key: pm_report}),
+                actions=EventActions(
+                    state_delta={
+                        output_key: pm_report,
+                        "is_sanity_passed": False,
+                        "user_confirmed": False,
+                        "feedback_count": ctx.session.state.get("feedback_count", 0),
+                        "discovery_instruction_mode": ctx.session.state.get("discovery_instruction_mode", False),
+                        "discovery_instruction": ctx.session.state.get("discovery_instruction", ""),
+                        "discovery_document_content": ctx.session.state.get("discovery_document_content", ""),
+                        "audit_feedback": ctx.session.state.get("audit_feedback", ""),
+                    }
+                ),
             )
         else:
             yield Event(
@@ -114,6 +217,12 @@ class DiscoveryPhaseAgent(BaseAgent):
                 actions=EventActions(
                     state_delta={
                         "is_sanity_passed": True,
+                        "user_confirmed": False,
+                        "feedback_count": ctx.session.state.get("feedback_count", 0),
+                        "discovery_instruction_mode": ctx.session.state.get("discovery_instruction_mode", False),
+                        "discovery_instruction": ctx.session.state.get("discovery_instruction", ""),
+                        "discovery_document_content": ctx.session.state.get("discovery_document_content", ""),
+                        "audit_feedback": ctx.session.state.get("audit_feedback", ""),
                     }
                 ),
             )
@@ -146,8 +255,8 @@ class DiscoveryPhaseAgent(BaseAgent):
             #     # 跳过这个重复的完整内容 event
             #     logger.debug(f"[{self.name}] 跳过 streaming 模式下的重复完整内容 event")
             #     continue
-            logger.debug (f"text: {event.content.parts[0].text}")
-            logger.debug(f"是否结束：{event.is_final_response()}")
+            # logger.debug (f"text: {event.content.parts[0].text}")
+            # logger.debug(f"是否结束：{event.is_final_response()}")
             yield event
 
         # 1. 进入用户确认阶段
@@ -162,25 +271,55 @@ class DiscoveryPhaseAgent(BaseAgent):
                         }
                     ]
                 },
-                actions=EventActions(state_delta={"user_confirmed": False}),
+                actions=EventActions(
+                    state_delta={
+                        "is_sanity_passed": ctx.session.state.get("is_sanity_passed", False),
+                        "user_confirmed": False,
+                        "feedback_count": ctx.session.state.get("feedback_count", 0),
+                        "discovery_instruction_mode": ctx.session.state.get("discovery_instruction_mode", False),
+                        "discovery_instruction": ctx.session.state.get("discovery_instruction", ""),
+                        "discovery_document_content": ctx.session.state.get("discovery_document_content", ""),
+                        "audit_feedback": ctx.session.state.get("audit_feedback", ""),
+                    }
+                ),
             )
             return
-        # 2. 用户要求修改阶段
+        # 2. 用户要求修改阶段（完整赋值所有字段）
         if "[Discovery_Expert] 用户要求修改" in full_content:
             yield Event(
                 author=self.name,
                 content={"parts": [{"text": "好的，正在根据您的意见进行调整..."}]},
-                actions=EventActions(state_delta={"user_confirmed": False}),
+                actions=EventActions(
+                    state_delta={
+                        "is_sanity_passed": ctx.session.state.get("is_sanity_passed", False),
+                        "user_confirmed": False,
+                        "feedback_count": ctx.session.state.get("feedback_count", 0),
+                        "discovery_instruction_mode": ctx.session.state.get("discovery_instruction_mode", False),
+                        "discovery_instruction": ctx.session.state.get("discovery_instruction", ""),
+                        "discovery_document_content": ctx.session.state.get("discovery_document_content", ""),
+                        "audit_feedback": ctx.session.state.get("audit_feedback", ""),
+                    }
+                ),
             )
             async for event in self._discover_agent_confirm_user_needs(ctx=ctx):
                 yield event
 
-        # 3. 用户已确认，交由审计阶段
+        # 3. 用户已确认，交由审计阶段（完整赋值所有字段）
         if "[Discovery_Expert] 用户已确认" in full_content:
             yield Event(
                 author=self.name,
                 content={"parts": [{"text": "收到确认，正在提交 CPO 进行最终审计...\n\n"}]},
-                actions=EventActions(state_delta={"user_confirmed": True}),
+                actions=EventActions(
+                    state_delta={
+                        "is_sanity_passed": ctx.session.state.get("is_sanity_passed", False),
+                        "user_confirmed": True,
+                        "feedback_count": ctx.session.state.get("feedback_count", 0),
+                        "discovery_instruction_mode": ctx.session.state.get("discovery_instruction_mode", False),
+                        "discovery_instruction": ctx.session.state.get("discovery_instruction", ""),
+                        "discovery_document_content": ctx.session.state.get("discovery_document_content", ""),
+                        "audit_feedback": ctx.session.state.get("audit_feedback", ""),
+                    }
+                ),
             )
 
 
@@ -203,7 +342,7 @@ class DiscoveryPhaseAgent(BaseAgent):
             return
 
 
-        # 2. 审计未通过，返回反馈
+        # 2. 审计未通过，返回反馈（完整赋值所有字段）
         system_ins = pm_report.get("system_instructions", "请继续完善。")
         score = pm_report.get("score", 0)
         audit_feedback_text = (
@@ -214,9 +353,13 @@ class DiscoveryPhaseAgent(BaseAgent):
             content={"parts": [{"text": f"重新生成文档中...\n\n{audit_feedback_text}\n\n"}]},
             actions=EventActions(
                 state_delta={
-                    "user_confirmed": False,  # 回到未确认状态
-                    "audit_feedback": audit_feedback_text,  # 将反馈注入 state
-                    "feedback_count": ctx.session.state.get("feedback_count", 0) + 1
+                    "is_sanity_passed": ctx.session.state.get("is_sanity_passed", False),
+                    "user_confirmed": False,
+                    "feedback_count": ctx.session.state.get("feedback_count", 0) + 1,
+                    "discovery_instruction_mode": ctx.session.state.get("discovery_instruction_mode", False),
+                    "discovery_instruction": ctx.session.state.get("discovery_instruction", ""),
+                    "discovery_document_content": ctx.session.state.get("discovery_document_content", ""),
+                    "audit_feedback": audit_feedback_text,
                 }
             ),
         )

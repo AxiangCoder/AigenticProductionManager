@@ -1,11 +1,10 @@
-import os
 from typing import AsyncGenerator
 from google.adk.agents import Agent, BaseAgent
 from agents.senior_pm_agent import create_senior_pm_for
 from google.adk.agents import InvocationContext
 from google.adk.events import Event, EventActions
 from utils.load_prompt import load_prompt
-from utils import MODEL, AgentInfo, logger, parse_json
+from utils import MODEL, AgentInfo, logger, parse_json, find_latest_document
 from google.genai import types
 
 
@@ -48,41 +47,12 @@ class ResearchPhaseAgent(BaseAgent):
         从 outputs 目录加载 Discovery Agent 输出的文档
         返回文档内容，如果不存在则返回空字符串
         """
-        output_dir = "outputs"
-        if not os.path.exists(output_dir):
-            logger.warning(f"[{self.name}] outputs 目录不存在")
-            return ""
-        
-        # 查找最新的 Discovery 相关文档
-        # 优先查找包含 "discovery" 或 "PRD" 的文档
-        discovery_files = []
-        try:
-            for filename in os.listdir(output_dir):
-                if filename.endswith(".md"):
-                    file_path = os.path.join(output_dir, filename)
-                    # 按修改时间排序，最新的在前
-                    mtime = os.path.getmtime(file_path)
-                    discovery_files.append((mtime, file_path, filename))
-        except Exception as e:
-            logger.error(f"[{self.name}] 读取 outputs 目录失败: {e}")
-            return ""
-        
-        if not discovery_files:
-            logger.warning(f"[{self.name}] outputs 目录下没有找到文档")
-            return ""
-        
-        # 按修改时间排序，取最新的
-        discovery_files.sort(key=lambda x: x[0], reverse=True)
-        latest_file = discovery_files[0][1]
-        
-        try:
-            with open(latest_file, "r", encoding="utf-8") as f:
-                content = f.read()
-            logger.info(f"[{self.name}] 已加载 Discovery 文档: {discovery_files[0][2]}")
-            return content
-        except Exception as e:
-            logger.error(f"[{self.name}] 读取文档失败: {e}")
-            return ""
+        doc_content = find_latest_document(
+            output_dir="outputs",
+            keywords=["discovery", "PRD"],
+            agent_name=self.name
+        )
+        return doc_content if doc_content else ""
 
     async def _run_async_impl(
         self, ctx: InvocationContext
