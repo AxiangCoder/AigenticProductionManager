@@ -72,10 +72,10 @@ class AgenticPMAgent(BaseAgent):
         }
         
         if discovery_doc_path:
-            result["project_stage"] = "discovery"
+            result["project_stage"] = "research"
             result["document_path"] = discovery_doc_path
         elif research_doc_path:
-            result["project_stage"] = "research"
+            result["project_stage"] = "待定。。。"
             result["document_path"] = research_doc_path
         return result
 
@@ -84,7 +84,7 @@ class AgenticPMAgent(BaseAgent):
         检测是否是首次加载（需要友好问候）
         """
         # 检查是否已经问候过
-        if ctx.session.state.get("_has_greeted", False):
+        if ctx.session.state.get("has_greeted", False):
             return False
         
         # 检查事件历史中是否有智能体回复（排除系统消息）
@@ -130,8 +130,10 @@ class AgenticPMAgent(BaseAgent):
             content={"parts": [{"text": greeting}]},
             actions=EventActions(
                 state_delta={
-                    "_has_greeted": True,
+                    "has_greeted": True,
                     "project_stage": project_stage,
+                    "current_agent": ctx.session.state.get("current_agent", None),
+                    "is_sub_agent_running": ctx.session.state.get("is_sub_agent_running", False)
                 }
             ),
         )
@@ -205,6 +207,13 @@ class AgenticPMAgent(BaseAgent):
         """
         主执行逻辑
         """
+
+        # 1.如果当前有子智能体在运行，直接让子智能体继续
+        if ctx.session.state.get("is_sub_agent_running", False):
+            async for event in self._run_sub_agent(ctx=ctx, target_agent_name=ctx.session.state.get("current_agent", None), instruction="", document_path=""):
+                yield event
+            return
+        
         # 1. 检测项目阶段
         project_stage_result = self._detect_project_stage()
         logger.info(f"[{self.name}] 检测到项目阶段: {project_stage_result['project_stage']}")
@@ -279,47 +288,54 @@ class AgenticPMAgent(BaseAgent):
             }
             target_name_cn = agent_names.get(target_agent_name, target_agent_name)
             
-            # 如果是首次路由（current_agent_name 为 None），不显示切换提示
-            if current_agent_name is not None:
-                yield Event(
-                    author=self.name,
-                    content={
-                        "parts": [
-                            {
-                                "text": f"正在切换到 {target_name_cn} 阶段...\n\n"
-                            }
-                        ]
-                    },
-                    actions=EventActions(
-                        state_delta={"current_agent": target_agent_name}
-                    ),
-                )
-            else:
-                # 首次路由，静默设置状态
-                yield Event(
-                    author=self.name,
-                    content={"parts": []},  # 空内容，不显示
-                    actions=EventActions(
-                        state_delta={"current_agent": target_agent_name}
-                    ),
-                )
-        
-        # 9. 调用子智能体
-        target_agent = self._get_agent(target_agent_name)
-        
+            yield Event(
+                author=self.name,
+                content={
+                    "parts": [
+                        {
+                            "text": f"正在切换到 {target_name_cn} 阶段...\n\n"
+                        }
+                    ]
+                },
+                actions=EventActions(
+                    state_delta={
+                        "has_greeted": ctx.session.state.get("has_greeted", False),
+                        "project_stage": ctx.session.state.get("project_stage", "unknown"),
+                        "current_agent": target_agent_name,
+                        "is_sub_agent_running": ctx.session.state.get("is_sub_agent_running", False)
+                    }
+                ),
+            )
+    
         # 从路由决策中获取 instruction
         instruction = route_decision.instruction if hasattr(route_decision, 'instruction') else ""
-        
-        # 如果子智能体支持 run_with_instruction，使用它；否则使用 run_async
-        if hasattr(target_agent, 'run_with_instruction'):
+        async for event in self._run_sub_agent(ctx=ctx, target_agent_name=target_agent_name, instruction=instruction, document_path=project_stage_result['document_path']):
+            yield event
+
+    async def _run_sub_agent(self, *, ctx: InvocationContext, target_agent_name: str, instruction: str, document_path: str) -> AsyncGenerator[Event, None]:
+        """
+        运行子智能体
+        """
+        target_agent = self._get_agent(target_agent_name)
+        yield Event(
+            author=self.name,
+            actions=EventActions(
+                state_delta={
+                    "is_sub_agent_running": True
+                }
+            ),
+        )
+        logger.debug (f"[{self.name}] 运行子智能体: {target_agent_name} "
+            f"(instruction: {instruction})"
+            f"(document_path: {document_path})")
+        if instruction:
             async for event in target_agent.run_with_instruction(
                 ctx=ctx,
                 instruction=instruction,
-                document_path=project_stage_result['document_path']
+                document_path=document_path
             ):
                 yield event
         else:
-            # 如果不支持 run_with_instruction，使用常规的 run_async
             async for event in target_agent.run_async(ctx):
                 yield event
 

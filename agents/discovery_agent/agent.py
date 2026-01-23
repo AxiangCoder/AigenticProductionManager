@@ -82,10 +82,16 @@ class DiscoveryPhaseAgent(BaseAgent):
                     },
                 )
         
-        # 2. 设置指令模式标志和指令内容到 state（完整赋值所有字段）
+        # 2. 设置指令模式标志和指令内容到 state（完整赋值所有字段），并注入文档内容（如果存在）
         yield Event(
             author=self.name,
-            content={"parts": []},
+            content={
+                "parts": [
+                    {
+                        "text": f"以下是现有的产品定义文档：\n\n{doc_content}\n\n---\n\n**任务指令：{instruction}, 请基于以上文档内容进行增量需求挖掘。**\n\n"
+                    }
+                ]
+            },
             actions=EventActions(
                 state_delta={
                     "is_sanity_passed": False,
@@ -118,49 +124,14 @@ class DiscoveryPhaseAgent(BaseAgent):
 
         logger.debug(f"is_sanity_passed: {is_sanity_passed}, is_instruction_mode: {is_instruction_mode}")
 
-        # 3. 指令模式：注入文档和指令，跳过 sanity check
-        if is_instruction_mode:
-            instruction = ctx.session.state.get("discovery_instruction", "")
-            doc_content = ctx.session.state.get("discovery_document_content")
-            
-            # 注入文档内容（如果存在）
-            if doc_content:
-                yield Event(
-                    author="system",
-                    content={
-                        "parts": [
-                            {
-                                "text": f"以下是现有的产品定义文档：\n\n{doc_content}\n\n---\n\n**任务指令：{instruction}, 请基于以上文档内容进行增量需求挖掘。**\n\n"
-                            }
-                        ]
-                    },
-                    # 跳过 sanity check，直接进入挖掘阶段（完整赋值所有字段）
-                    actions=EventActions(
-                        state_delta={
-                            "is_sanity_passed": True,
-                            "user_confirmed": False,
-                            "feedback_count": ctx.session.state.get("feedback_count", 0),
-                            "discovery_instruction_mode": False,
-                            "discovery_instruction": "",
-                            "discovery_document_content": "",
-                            "audit_feedback": ctx.session.state.get("audit_feedback", ""),
-                        }
-                    ),
-                )
-            
-            # 直接进入挖掘阶段
-            async for event in self._stage_discovery_mining(ctx=ctx):
-                yield event
-            return
-
-        # 4. 常规模式：需求准入验证
+        # 2. 需求准入验证
         if not is_sanity_passed:
             async for event in self._stage_sanity_check(ctx=ctx, output_key=output_key):
                 yield event
             if not ctx.session.state.get("is_sanity_passed", False):
                 return  # 拦截，等待用户重新输入
 
-        # 5. 常规模式：需求挖掘与用户确认
+        # 3. 需求挖掘与用户确认
         async for event in self._stage_discovery_mining(ctx=ctx):
             yield event
 
