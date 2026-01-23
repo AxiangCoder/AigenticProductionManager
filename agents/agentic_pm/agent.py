@@ -1,8 +1,9 @@
 import os
-from typing import AsyncGenerator, Optional, ClassVar
+from typing import AsyncGenerator, Optional
 from google.adk.agents import BaseAgent
 from agents.discovery_agent import DiscoveryPhaseAgent
 from agents.researcher_agent import ResearchPhaseAgent
+from agents.router_agent import RouterAgent
 from google.adk.agents import InvocationContext
 from google.adk.events import Event, EventActions
 from utils import logger
@@ -13,32 +14,29 @@ class AgenticPMAgent(BaseAgent):
     主智能体：负责路由决策、项目阶段管理、用户交互
     1. 项目阶段检测：检查 outputs 目录判断当前项目阶段
     2. 友好问候：首次加载时根据项目阶段友好问候用户
-    3. 智能路由：根据用户输入和项目阶段路由到合适的子智能体
+    3. 智能路由：使用 RouterAgent 进行路由决策（包含首次判断）
     4. 状态管理：管理当前活跃智能体和项目阶段
     """
 
     discovery_agent: BaseAgent
     research_agent: BaseAgent
+    router_agent: BaseAgent
 
     model_config = {"arbitrary_types_allowed": True}
-
-    # 路由关键词配置
-    ROUTE_KEYWORDS: ClassVar[dict[str, list[str]]] = {
-        "discovery": ["新想法", "新需求", "修改需求", "重新开始", "需求分析", "产品想法"],
-        "research": ["市场调研", "竞品分析", "行业分析", "对标", "竞争对手", "市场研究"],
-    }
 
     def __init__(self):
         # 初始化子智能体
         discovery_agent = DiscoveryPhaseAgent()
         research_agent = ResearchPhaseAgent()
+        router_agent = RouterAgent()
 
         super().__init__(
             name="Agentic_PM",
             description="智能产品经理助手，负责路由决策和用户交互",
-            sub_agents=[discovery_agent, research_agent],
+            sub_agents=[discovery_agent, research_agent, router_agent],
             discovery_agent=discovery_agent,
             research_agent=research_agent,
+            router_agent=router_agent,
         )
 
     def _detect_project_stage(self) -> str:
@@ -144,36 +142,6 @@ class AgenticPMAgent(BaseAgent):
             ),
         )
 
-    def _route_decision_rule_based(
-        self, user_message: str, current_agent: Optional[str]
-    ) -> str:
-        """
-        基于规则的路由决策
-        返回: "discovery" | "research" | "continue"
-        """
-        user_lower = user_message.lower()
-        
-        # 检查 Discovery 关键词
-        for keyword in self.ROUTE_KEYWORDS["discovery"]:
-            if keyword in user_lower:
-                logger.info(f"[{self.name}] 检测到 Discovery 关键词: {keyword}")
-                return "discovery"
-        
-        # 检查 Research 关键词
-        for keyword in self.ROUTE_KEYWORDS["research"]:
-            if keyword in user_lower:
-                logger.info(f"[{self.name}] 检测到 Research 关键词: {keyword}")
-                return "research"
-        
-        # 如果没有匹配到关键词，继续当前智能体
-        if current_agent:
-            logger.info(f"[{self.name}] 未匹配到关键词，继续当前智能体: {current_agent}")
-            return "continue"
-        
-        # 如果没有当前智能体，默认路由到 discovery
-        logger.info(f"[{self.name}] 无当前智能体，默认路由到 discovery")
-        return "discovery"
-
     def _get_agent(self, agent_name: str) -> BaseAgent:
         """
         根据名称获取对应的智能体实例
@@ -193,6 +161,7 @@ class AgenticPMAgent(BaseAgent):
         # 1. 检测项目阶段
         project_stage = self._detect_project_stage()
         logger.info(f"[{self.name}] 检测到项目阶段: {project_stage}")
+        
         # 2. 首次加载：友好问候
         if self._is_first_load(ctx):
             async for event in self._greet_user(ctx, project_stage):
@@ -208,18 +177,50 @@ class AgenticPMAgent(BaseAgent):
         # 4. 获取当前活跃智能体
         current_agent_name = ctx.session.state.get("current_agent", None)
         
-        # 5. 路由决策
-        route_decision = self._route_decision_rule_based(
-            last_user_msg, current_agent_name
+        # 5. 使用 RouterAgent 进行路由决策（包含首次判断）
+        route_decision = await self.router_agent.decide(
+            ctx=ctx,
+            user_message=last_user_msg,
+            project_stage=project_stage,
+            current_agent=current_agent_name,
         )
         
-        # 6. 确定目标智能体
-        if route_decision == "continue":
-            target_agent_name = current_agent_name or "discovery"
-        else:
-            target_agent_name = route_decision
+        logger.info(
+            f"[{self.name}] 路由决策: {route_decision.target_agent} "
+            f"(原因: {route_decision.reason}, 置信度: {route_decision.confidence})"
+        )
         
-        # 7. 更新状态（如果需要切换智能体）
+        # 6. 处理路由决策
+        if route_decision.target_agent == "unknown":
+            # 无法确定，友好询问用户
+            yield Event(
+                author=self.name,
+                content={
+                    "parts": [
+                        {
+                            "text": "抱歉，我无法确定应该由哪个智能体处理您的请求。请明确说明您的需求，例如：\n"
+                            "- 如果是新想法或需求分析，请说\"新需求\"或\"需求分析\"\n"
+                            "- 如果是市场调研，请说\"市场调研\"或\"竞品分析\""
+                        }
+                    ]
+                },
+            )
+            return
+        
+        # 7. 确定目标智能体
+        if route_decision.target_agent == "continue":
+            # 继续当前智能体
+            if current_agent_name:
+                target_agent_name = current_agent_name
+            else:
+                # 如果没有当前智能体，默认路由到 discovery
+                target_agent_name = "discovery"
+                logger.warning(f"[{self.name}] 路由决策为 continue 但没有当前智能体，默认路由到 discovery")
+        else:
+            # 路由到指定智能体
+            target_agent_name = route_decision.target_agent
+        
+        # 8. 更新状态（如果需要切换智能体）
         if target_agent_name != current_agent_name:
             logger.info(
                 f"[{self.name}] 路由切换: {current_agent_name} -> {target_agent_name}"
@@ -232,7 +233,6 @@ class AgenticPMAgent(BaseAgent):
             target_name_cn = agent_names.get(target_agent_name, target_agent_name)
             
             # 如果是首次路由（current_agent_name 为 None），不显示切换提示
-            # 直接让子智能体处理，避免冗余提示
             if current_agent_name is not None:
                 yield Event(
                     author=self.name,
@@ -257,7 +257,7 @@ class AgenticPMAgent(BaseAgent):
                     ),
                 )
         
-        # 8. 调用子智能体
+        # 9. 调用子智能体
         target_agent = self._get_agent(target_agent_name)
         async for event in target_agent.run_async(ctx):
             yield event
