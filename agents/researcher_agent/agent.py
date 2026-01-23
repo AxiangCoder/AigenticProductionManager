@@ -1,4 +1,3 @@
-import json
 import os
 from typing import AsyncGenerator
 from google.adk.agents import Agent, BaseAgent
@@ -6,7 +5,7 @@ from agents.senior_pm_agent import create_senior_pm_for
 from google.adk.agents import InvocationContext
 from google.adk.events import Event, EventActions
 from utils.load_prompt import load_prompt
-from utils import MODEL, AgentInfo, logger
+from utils import MODEL, AgentInfo, logger, parse_json
 from google.genai import types
 
 
@@ -132,39 +131,9 @@ class ResearchPhaseAgent(BaseAgent):
 
     def _parse_json(self, text: str) -> dict:
         """
-        加固版 JSON 解析：
-        1. 使用非贪婪匹配 r'\{.*?\}' 只抓取第一个对象
-        2. 增加对嵌套结构的容错
+        使用公共的 parse_json 工具函数解析 JSON
         """
-        import json
-
-        try:
-            # 找到第一个 {
-            start_idx = text.find("{")
-            if start_idx == -1:
-                return {}
-
-            # 找到对应的最后一个 } (针对并排 JSON，我们尝试找到第一个完整闭合的块)
-            content = text[start_idx:]
-            bracket_count = 0
-            end_idx = 0
-            for i, char in enumerate(content):
-                if char == "{":
-                    bracket_count += 1
-                elif char == "}":
-                    bracket_count -= 1
-                    if bracket_count == 0:
-                        end_idx = i + 1
-                        break
-
-            if end_idx > 0:
-                clean_json = content[:end_idx]
-                return json.loads(clean_json)
-
-            return {}
-        except Exception as e:
-            logger.error(f"JSON 解析失败: {e}")
-            return {}
+        return parse_json(text)
 
     async def _stage_research_interview(
         self, ctx: InvocationContext

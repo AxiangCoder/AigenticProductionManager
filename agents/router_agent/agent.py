@@ -5,7 +5,7 @@ from google.adk.agents import Agent, BaseAgent
 from google.adk.agents import InvocationContext
 from google.adk.events import Event
 from utils.load_prompt import load_prompt
-from utils import MODEL, logger
+from utils import MODEL, logger, parse_json
 from google.genai import types
 
 
@@ -132,42 +132,7 @@ class RouterAgent(BaseAgent):
 
     def _parse_json(self, text: str) -> dict:
         """
-        加固版 JSON 解析：
-        1. 使用非贪婪匹配 r'\{.*?\}' 只抓取第一个对象
-        2. 增加对嵌套结构的容错
+        使用公共的 parse_json 工具函数解析 JSON
         """
-        import json
-
-        try:
-            # 使用非贪婪匹配 (.*?)，只抓取从第一个 { 到它最近的一个 }
-            # 但如果 JSON 内部有嵌套的花括号，非贪婪匹配会提前截断。
-            # 所以最佳实践是：匹配所有，然后手动处理。
-
-            # 找到第一个 {
-            start_idx = text.find("{")
-            if start_idx == -1:
-                return {}
-
-            # 找到对应的最后一个 } (针对并排 JSON，我们尝试找到第一个完整闭合的块)
-            # 这里使用一个简单的计数器来寻找第一个完整的 JSON 对象
-            content = text[start_idx:]
-            bracket_count = 0
-            end_idx = 0
-            for i, char in enumerate(content):
-                if char == "{":
-                    bracket_count += 1
-                elif char == "}":
-                    bracket_count -= 1
-                    if bracket_count == 0:
-                        end_idx = i + 1
-                        break
-
-            if end_idx > 0:
-                clean_json = content[:end_idx]
-                return json.loads(clean_json)
-
-            return {}
-        except Exception as e:
-            logger.error(f"JSON 解析极致加固失败: {e}")
-            return {}
+        return parse_json(text)
 
